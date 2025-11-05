@@ -1,2 +1,3 @@
-results/
+results/*.pth
+results/*.png
 Data Morocco - Laayoune.csv

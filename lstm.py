@@ -2,21 +2,24 @@ import os
 import random
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 from typing import Tuple, List
 
 import torch
 from torch import nn
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader
 
 from sklearn.preprocessing import MinMaxScaler
-from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.metrics import mean_absolute_error, root_mean_squared_error
+
+from dataset import TimeSeriesDataset
 
 # reproducibility
-SEED = 59
-random.seed(SEED)
-np.random.seed(SEED)
-torch.manual_seed(SEED)
-torch.cuda.manual_seed_all(SEED)
+# SEED = 59
+# random.seed(SEED)
+# np.random.seed(SEED)
+# torch.manual_seed(SEED)
+# torch.cuda.manual_seed_all(SEED)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -25,16 +28,16 @@ CSV_PATH = "Data Morocco - Laayoune.csv"
 RESULTS_DIR = "results"
 
 DATETIME_COL = "DateTime"
-TARGET_COLS = ["zone1"]        
-RESAMPLE_RULE = "H"            # '10T' = 10min, 'H' = 1 hour, '24H' = 1 day
-SEQ_LEN = 6                    # lagged input (6h)
+TARGET_COLS = "zone1"        
+RESAMPLE_RULE = "d"            # '10T' = 10min, 'h' = 1 hour, 'd' = 1 day
+SEQ_LEN = 14                   # lagged input (24h)
 HORIZON = 1                    # how many steps ahead we are predicting (1h)
 
 BATCH_SIZE = 64
-EPOCHS = 40
-PATIENCE = 10
+EPOCHS = 500
+PATIENCE = 20
 LR = 1e-5
-HIDDEN_SIZE = 64
+HIDDEN_SIZE = 128
 NUM_LAYERS = 2
 DROPOUT = 0.3 
 VAL_SPLIT = 0.2
@@ -145,11 +148,11 @@ def create_lag_windows(df: pd.DataFrame, target_col: str, lag: int = 1) -> Tuple
     X_list, y_list = [], []
     for i in range(len(df) - lag):
         X_list.append(values[i:i+lag, :])              
-        y_list.append(values[i+lag, target_idx])      
+        y_list.append(values[i+lag, target_idx])
     
     X = np.array(X_list)
     y = np.array(y_list).reshape(-1, 1)               
-    
+
     return X, y
 
 def train_val_split(df: pd.DataFrame, val_split: int) -> Tuple[pd.DataFrame, pd.DataFrame]:
@@ -182,24 +185,43 @@ def evaluation_metrics(y_true: np.ndarray | list, y_pred: np.ndarray | list) -> 
 
     Returns:
         pd.DataFrame: DataFrame containing the calculated metrics:
-                      - 'MAE'  : Mean Absolute Error
-                      - 'RMSE' : Root Mean Squared Error
-                      - 'MAPE' : Mean Absolute Percentage Error
+            - 'MAE'  : Mean Absolute Error
+            - 'RMSE' : Root Mean Squared Error
+            - 'MAPE' : Mean Absolute Percentage Error
     """
     y_true = np.array(y_true).flatten()
     y_pred = np.array(y_pred).flatten()
     
     mae = mean_absolute_error(y_true, y_pred)
-    rmse = mean_squared_error(y_true, y_pred, squared=False)
+    rmse = root_mean_squared_error(y_true, y_pred)
     mape = np.mean(np.abs((y_true - y_pred) / (y_true + 1e-9))) * 100
 
     metrics = pd.DataFrame([{
+        'RESAMPLE_RULE': RESAMPLE_RULE, 
+        'SEQ_LEN': SEQ_LEN, 
+        'HORIZON': HORIZON,
         'MAE': mae,
         'RMSE': rmse,
         'MAPE': mape
     }])
     
     return metrics
+
+def evaluation_image(df: pd.DataFrame, y_true: np.ndarray | list, y_pred: np.ndarray | list):
+    plt.figure(figsize=(12, 5))
+
+    plt.plot(df.index[-len(y_true):], y_true, label='Real')
+    plt.plot(df.index[-len(y_pred):], y_pred, label='Prediction')
+
+    plt.title("Energy load forescast")
+    plt.xlabel("Time")
+    plt.ylabel("Consumption [Ampere]")
+
+    plt.legend()
+    plt.grid(True, linestyle='--', alpha=0.4)
+    plt.tight_layout()
+    
+    plt.show()
 
 class LSTM(nn.Module):
     """
@@ -242,7 +264,7 @@ class LSTM(nn.Module):
 
 def run_pipeline():
     # load data
-    df = load_and_prepare(CSV_PATH, DATETIME_COL, resample_rule=RESAMPLE_RULE)
+    df = load_and_prepare(CSV_PATH, DATETIME_COL, resample_rule=RESAMPLE_RULE) # 1hour
 
     df = df.drop(columns=['zone2', 'zone3', 'zone4', 'zone5'])
 
@@ -268,12 +290,12 @@ def run_pipeline():
                                 index=df_val.index, columns=feature_cols)
 
     # lag windows
-    X_train, Y_train = create_lag_windows(df_train_scaled, lag=SEQ_LEN)
-    X_val, Y_val = create_lag_windows(df_val_scaled, lag=SEQ_LEN)
+    X_train, Y_train = create_lag_windows(df_train_scaled, target_col=TARGET_COLS, lag=SEQ_LEN)
+    X_val, Y_val = create_lag_windows(df_val_scaled, target_col=TARGET_COLS, lag=SEQ_LEN)
 
     # data loaders
-    train_ds = Dataset(X_train, Y_train)
-    val_ds = Dataset(X_val, Y_val)
+    train_ds = TimeSeriesDataset(X_train, Y_train)
+    val_ds = TimeSeriesDataset(X_val, Y_val)
 
     train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, drop_last=True)
     val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, drop_last=True)
@@ -406,8 +428,10 @@ def run_pipeline():
 
     print(df_metrics)
 
-    df_metrics.to_csv(os.path.join(RESULTS_DIR, "lstm_metrics_by_horizon.csv"), index=False)
+    df_metrics.to_csv(os.path.join(RESULTS_DIR, "lstm_metrics_by_horizon.csv"), mode='a', index=False)
     
+    evaluation_image(df_val, y_true_real, y_pred_real)
+
     print("LSTM metrics saved to", os.path.join(RESULTS_DIR, "lstm_metrics_by_horizon.csv"))
 
 if __name__ == "__main__":
