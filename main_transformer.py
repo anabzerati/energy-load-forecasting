@@ -6,15 +6,14 @@ import matplotlib.pyplot as plt
 from typing import Tuple, List
 
 import torch
-from torch import nn
+from torch import nn, optim
 from torch.utils.data import DataLoader
 
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_absolute_error, root_mean_squared_error
 
 from dataset import TimeSeriesDataset
-from lstm import LSTM, training, testing
-#from gru import GRU, training, testing
+from transformer import TimeSeriesTransformer, training, testing
 
 # reproducibility
 # SEED = 59
@@ -33,7 +32,7 @@ DATETIME_COL = "DateTime"
 TARGET_COLS = "zone1"        
 RESAMPLE_RULE = "h"            # '10T' = 10min, 'h' = 1 hour, 'd' = 1 day
 SEQ_LEN = 24                   # lagged input (24h)
-HORIZON = 6                    # how many steps ahead we are predicting (1h)
+HORIZON = 1                    # how many steps ahead we are predicting (1h)
 
 BATCH_SIZE = 64
 EPOCHS = 500
@@ -270,25 +269,32 @@ def run_pipeline():
     print(f"Train shape: X={X_train.shape}, y={Y_train.shape}")
     print(f"Val shape:   X={X_val.shape}, y={Y_val.shape}")
 
-    # lstm
-    n_features = X_train.shape[2]
-    try:
-        n_targets = Y_train.shape[2]
-    except:
-        n_targets = 1
+    model = TimeSeriesTransformer(
+        input_size=X_train.shape[2],   # nº features
+        d_model=128,                   # dimensão interna
+        num_layers=3,                  # nº camadas encoder
+        num_heads=8,                   # cabeças de atenção
+        dim_feedforward=256,           # feedforward interno
+        dropout=0.1
+    ).to(device)
 
-    if HORIZON > 1:
-        model = LSTM(n_features, HIDDEN_SIZE, NUM_LAYERS, 1, n_targets, DROPOUT).to(device)
-    else:
-        model = LSTM(n_features, HIDDEN_SIZE, NUM_LAYERS, HORIZON, n_targets, DROPOUT).to(device)
-        
-    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
+    optimizer = optim.Adam(model.parameters(), lr=1e-3)
     criterion = nn.MSELoss()
 
-    training(model, train_loader, val_loader, optimizer, criterion, RESULTS_DIR, PATIENCE, EPOCHS, device)
+    training(
+        model=model,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        optimizer=optimizer,
+        criterion=criterion,
+        RESULTS_DIR=RESULTS_DIR,
+        PATIENCE=10,
+        EPOCHS=50,
+        device=device
+    )
 
     # load and test best model
-    model.load_state_dict(torch.load(os.path.join(RESULTS_DIR, "best_lstm.pth"), map_location=device))
+    model.load_state_dict(torch.load(os.path.join(RESULTS_DIR, "best_transformer.pth"), map_location=device))
     preds_val_scaled, y_val_scaled = testing(model, val_loader, device)
 
     print(preds_val_scaled.shape)
@@ -330,11 +336,11 @@ def run_pipeline():
 
     print(df_metrics)
 
-    df_metrics.to_csv(os.path.join(RESULTS_DIR, "lstm_metrics_by_horizon.csv"), mode='a', index=False)
+    df_metrics.to_csv(os.path.join(RESULTS_DIR, "transformer_metrics_by_horizon.csv"), mode='a', index=False)
     
     evaluation_image(df_val, y_true_real, y_pred_real)
 
-    print("LSTM metrics saved to", os.path.join(RESULTS_DIR, "lstm_metrics_by_horizon.csv"))
+    print("LSTM metrics saved to", os.path.join(RESULTS_DIR, "transformer_metrics_by_horizon.csv"))
 
 if __name__ == "__main__":
     run_pipeline()
