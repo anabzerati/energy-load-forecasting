@@ -13,7 +13,8 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_absolute_error, root_mean_squared_error
 
 from dataset import TimeSeriesDataset
-from lstm import LSTM, training, testing
+#from lstm import LSTM, training, testing
+from gru import GRU, training, testing
 
 # reproducibility
 # SEED = 59
@@ -31,7 +32,7 @@ RESULTS_DIR = "results"
 DATETIME_COL = "DateTime"
 TARGET_COLS = "zone1"        
 RESAMPLE_RULE = "d"            # '10T' = 10min, 'h' = 1 hour, 'd' = 1 day
-SEQ_LEN = 14                   # lagged input (24h)
+SEQ_LEN = 7                   # lagged input (24h)
 HORIZON = 1                    # how many steps ahead we are predicting (1h)
 
 BATCH_SIZE = 64
@@ -271,14 +272,14 @@ def run_pipeline():
         n_targets = Y_train.shape[2]
     except:
         n_targets = 1
-    model = LSTM(n_features, HIDDEN_SIZE, NUM_LAYERS, HORIZON, n_targets, DROPOUT).to(device)
+    model = GRU(n_features, HIDDEN_SIZE, NUM_LAYERS, HORIZON, n_targets, DROPOUT).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
     criterion = nn.MSELoss()
 
     training(model, train_loader, val_loader, optimizer, criterion, RESULTS_DIR, PATIENCE, EPOCHS, device)
 
     # load and test best model
-    model.load_state_dict(torch.load(os.path.join(RESULTS_DIR, "best_lstm.pth"), map_location=device))
+    model.load_state_dict(torch.load(os.path.join(RESULTS_DIR, "best_gru.pth"), map_location=device))
     preds_val_scaled, y_val_scaled = testing(model, val_loader, device)
 
     print(preds_val_scaled.shape)
@@ -320,11 +321,11 @@ def run_pipeline():
 
     print(df_metrics)
 
-    df_metrics.to_csv(os.path.join(RESULTS_DIR, "lstm_metrics_by_horizon.csv"), mode='a', index=False)
+    df_metrics.to_csv(os.path.join(RESULTS_DIR, "gru_metrics_by_horizon.csv"), mode='a', index=False)
     
     evaluation_image(df_val, y_true_real, y_pred_real)
 
-    print("LSTM metrics saved to", os.path.join(RESULTS_DIR, "lstm_metrics_by_horizon.csv"))
+    print("LSTM metrics saved to", os.path.join(RESULTS_DIR, "gru_metrics_by_horizon.csv"))
 
 if __name__ == "__main__":
     run_pipeline()
