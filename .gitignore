@@ -1,5 +1,5 @@
 results/*.pth
 results/*.png
 Data Morocco - Laayoune.csv
-weather-data/dados_meteorologicos.csv
+weather-data/*.csv
 weather-data/.cache.sqlite
