@@ -6,41 +6,37 @@ import matplotlib.pyplot as plt
 from typing import Tuple, List
 
 import torch
-from torch import nn
+from torch import nn, optim
 from torch.utils.data import DataLoader
 
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_absolute_error, root_mean_squared_error
 
-from dataset import TimeSeriesDataset
-from lstm import LSTM, training, testing
-#from gru import GRU, training, testing
+import sys
+from pathlib import Path
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.append(str(ROOT))
 
-# reproducibility
-# SEED = 59
-# random.seed(SEED)
-# np.random.seed(SEED)
-# torch.manual_seed(SEED)
-# torch.cuda.manual_seed_all(SEED)
+from data.dataset import TimeSeriesDataset
+from models.transformer import TimeSeriesTransformer, training, testing
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # configs
-CSV_PATH = "Data Morocco - Laayoune.csv"
-RESULTS_DIR = "results"
+CSV_PATH = "../data/Data Morocco - Laayoune.csv"
+RESULTS_DIR = "../results"
 
 DATETIME_COL = "DateTime"
 TARGET_COLS = "zone1"        
-RESAMPLE_RULE = "h"            # '10T' = 10min, 'h' = 1 hour, 'd' = 1 day
-SEQ_LEN = 24                   # lagged input (24h)
-HORIZON = 6                    # how many steps ahead we are predicting (1h)
+RESAMPLE_RULE = "h"            
+SEQ_LEN = 24                   
+HORIZON = 1                    
 
 BATCH_SIZE = 64
 EPOCHS = 500
 PATIENCE = 20
-LR = 1e-5
 HIDDEN_SIZE = 128
-NUM_LAYERS = 2
+NUM_LAYERS = 3
 DROPOUT = 0.3 
 VAL_SPLIT = 0.2
 
@@ -94,7 +90,7 @@ def add_time_features(df: pd.DataFrame) -> pd.DataFrame:
     hour = df.index.hour
 
     # seasonality
-    dayofweek = df.index.dayofweek          # 0=monday, 6=sunday
+    dayofweek = df.index.dayofweek # 0=monday, 6=sunday
     dayofyear = df.index.dayofyear
     weekofyear = df.index.isocalendar().week.astype(int)
 
@@ -154,8 +150,8 @@ def create_lag_windows(
     target_idx = df.columns.get_loc(target_col)
 
     for i in range(len(df) - lag - horizon + 1):
-        X.append(data[i:i+lag, :])                     # lag steps of all features
-        y.append(data[i+lag+horizon-1, target_idx])    # value at t+lag+horizon-1
+        X.append(data[i:i+lag, :]) # lag steps of all features
+        y.append(data[i+lag+horizon-1, target_idx]) # value at t+lag+horizon-1
 
     X = np.array(X)
     y = np.array(y).reshape(-1, 1)
@@ -270,25 +266,32 @@ def run_pipeline():
     print(f"Train shape: X={X_train.shape}, y={Y_train.shape}")
     print(f"Val shape:   X={X_val.shape}, y={Y_val.shape}")
 
-    # lstm
-    n_features = X_train.shape[2]
-    try:
-        n_targets = Y_train.shape[2]
-    except:
-        n_targets = 1
+    model = TimeSeriesTransformer(
+        input_size=X_train.shape[2], # num features
+        d_model=128, # dimensão interna
+        num_layers=NUM_LAYERS, # num camadas encoder
+        num_heads=8,  # cabeças de atenção
+        dim_feedforward=256, # feedforward interno
+        dropout=DROPOUT
+    ).to(device)
 
-    if HORIZON > 1:
-        model = LSTM(n_features, HIDDEN_SIZE, NUM_LAYERS, 1, n_targets, DROPOUT).to(device)
-    else:
-        model = LSTM(n_features, HIDDEN_SIZE, NUM_LAYERS, HORIZON, n_targets, DROPOUT).to(device)
-        
-    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
+    optimizer = optim.Adam(model.parameters(), lr=1e-3)
     criterion = nn.MSELoss()
 
-    training(model, train_loader, val_loader, optimizer, criterion, RESULTS_DIR, PATIENCE, EPOCHS, device)
+    training(
+        model=model,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        optimizer=optimizer,
+        criterion=criterion,
+        RESULTS_DIR=RESULTS_DIR,
+        PATIENCE=PATIENCE,
+        EPOCHS=EPOCHS,
+        device=device
+    )
 
     # load and test best model
-    model.load_state_dict(torch.load(os.path.join(RESULTS_DIR, "best_lstm.pth"), map_location=device))
+    model.load_state_dict(torch.load(os.path.join(RESULTS_DIR, "best_transformer.pth"), map_location=device))
     preds_val_scaled, y_val_scaled = testing(model, val_loader, device)
 
     print(preds_val_scaled.shape)
@@ -330,11 +333,11 @@ def run_pipeline():
 
     print(df_metrics)
 
-    df_metrics.to_csv(os.path.join(RESULTS_DIR, "lstm_metrics_by_horizon.csv"), mode='a', index=False)
+    df_metrics.to_csv(os.path.join(RESULTS_DIR, "transformer_metrics_by_horizon.csv"), mode='a', index=False)
     
     evaluation_image(df_val, y_true_real, y_pred_real)
 
-    print("LSTM metrics saved to", os.path.join(RESULTS_DIR, "lstm_metrics_by_horizon.csv"))
+    print("LSTM metrics saved to", os.path.join(RESULTS_DIR, "transformer_metrics_by_horizon.csv"))
 
 if __name__ == "__main__":
     run_pipeline()
