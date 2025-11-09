@@ -1,15 +1,13 @@
 import os
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-from typing import Tuple, List
+from typing import List
 
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
 from sklearn.preprocessing import MinMaxScaler
-from sklearn.metrics import mean_absolute_error, root_mean_squared_error
 
 import sys
 from pathlib import Path
@@ -18,223 +16,34 @@ sys.path.append(str(ROOT))
 
 from data.dataset import TimeSeriesDataset
 from models.lstm import LSTM, training, testing
-#from models.gru import GRU, training, testing
+# from models.gru import GRU, training, testing
+# # from models.transformer import TimeSeriesTransformer, training, testing
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+from utils.data_prep import load_and_prepare, add_time_features, create_lag_windows, train_val_split, interquartile_range
+from utils.evaluation import evaluation_metrics, plot_predictions
 
-# configs
-CSV_PATH = "../data/Data Morocco - Laayoune.csv"
-RESULTS_DIR = "../results"
-
-DATETIME_COL = "DateTime"
-TARGET_COLS = "zone1"        
-RESAMPLE_RULE = "h" # 'h' = 1 hour, 'd' = 1 day
-SEQ_LEN = 24 # lagged input (24h)
-HORIZON = 6  # how many steps ahead we are predicting (6h)
-
-BATCH_SIZE = 64
-EPOCHS = 500
-PATIENCE = 20
-LR = 1e-5
-HIDDEN_SIZE = 128
-NUM_LAYERS = 2
-DROPOUT = 0.3 
-VAL_SPLIT = 0.2
-
-def load_and_prepare(csv_path: str, dt_col: str, decimal: str = ',', resample_rule: str = 'H') -> pd.DataFrame:    
-    """
-    Load a CSV file, parse the datetime column and resample the data.
-
-    Args:
-        csv_path (str): Path to the CSV file.
-        dt_col (str): Name of the column containing datetime information.
-        decimal (str, optional): Decimal separator used in the CSV (default is ',').
-        resample_rule (str, optional): Pandas offset alias to resample the data (e.g., 'H' for hourly). 
-                                       If None, no resampling is applied. Default is 'H'.
-
-    Returns:
-        pd.DataFrame: DataFrame with datetime index, numeric values, and resampled according to the given rule.
-    """
-
-    df = pd.read_csv(csv_path, decimal=decimal, quotechar='"', parse_dates=[dt_col])
-    df.index = pd.to_datetime(df[dt_col])
-    df = df.drop(columns=[dt_col])
-
-    # resampling to desired frequency
-    df = df.resample(resample_rule).sum()
-
-    # interpolate gaps 
-    df = df.interpolate(method='time').dropna()
-
-    return df
-
-def add_time_features(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Enrich the DataFrame with cyclical and categorical time-based features
-
-    Includes:
-        - Daily and weekly cycles (sin, cos)
-        - Day of the year and week of the year (seasonality)
-        - Weekend indicator
-        - Time of day segmentation (Night, Morning, Afternoon, Evening)
-
-    Args:
-        df (pd.DataFrame): DataFrame with a datetime index.
-
-    Returns:
-        pd.DataFrame: DataFrame with the new features added.
-    """
-
-    if not isinstance(df.index, pd.DatetimeIndex):
-        raise ValueError("DataFrame must have a datetime index.")
-
-    hour = df.index.hour
-
-    # seasonality
-    dayofweek = df.index.dayofweek # 0=monday, 6=sunday
-    dayofyear = df.index.dayofyear
-    weekofyear = df.index.isocalendar().week.astype(int)
-
-    # cycles
-    df['hour_sin'] = np.sin(2 * np.pi * hour / 24)
-    df['hour_cos'] = np.cos(2 * np.pi * hour / 24)
-    df['dow_sin'] = np.sin(2 * np.pi * dayofweek / 7)
-    df['dow_cos'] = np.cos(2 * np.pi * dayofweek / 7)
-    df['doy_sin'] = np.sin(2 * np.pi * dayofyear / 365)
-    df['doy_cos'] = np.cos(2 * np.pi * dayofyear / 365)
-    df['woy_sin'] = np.sin(2 * np.pi * weekofyear / 52)
-    df['woy_cos'] = np.cos(2 * np.pi * weekofyear / 52)
-
-    # weekend indicatior
-    df['is_weekend'] = (dayofweek >= 5).astype(int)
-
-    # time of day
-    def get_time_of_day(h):
-        if 0 <= h < 6:
-            return "Night"
-        elif 6 <= h < 12:
-            return "Morning"
-        elif 12 <= h < 18:
-            return "Afternoon"
-        else:
-            return "Evening"
-
-    df['time_of_day'] = [get_time_of_day(h) for h in hour]
-
-    # one-hot encoding
-    tod_dummies = pd.get_dummies(df['time_of_day'], prefix='tod')
-    df = pd.concat([df.drop(columns='time_of_day'), tod_dummies], axis=1)
-
-    return df
-
-def create_lag_windows(
-    df: pd.DataFrame,
-    target_col: str,
-    lag: int,
-    horizon: int
+def run_pipeline(
+    csv_path: str,
+    resample_rule: str,
+    seq_len: int,
+    horizon: int,
+    device: torch.device,
+    tag: str,
+    target_col: str = "consumo",
 ):
     """
-    Creates lagged input sequences (X) and target values (y) for forecasting.
-
-    Args:
-        df: DataFrame containing the time series data.
-        target_col: Name of the target column.
-        lag: Number of past time steps to use as input.
-        horizon: Number of steps ahead to predict (e.g., 5 means predict t+5).
-
-    Returns:
-        X: np.ndarray of shape (n_samples, lag, n_features)
-        y: np.ndarray of shape (n_samples, 1)
+    Runs the full forecasting pipeline for given parameters.
     """
-    X, y = [], []
-    data = df.values
-    target_idx = df.columns.get_loc(target_col)
-
-    for i in range(len(df) - lag - horizon + 1):
-        X.append(data[i:i+lag, :]) # lag steps of all features
-        y.append(data[i+lag+horizon-1, target_idx]) # value at t+lag+horizon-1
-
-    X = np.array(X)
-    y = np.array(y).reshape(-1, 1)
-    return X, y
-
-def train_val_split(df: pd.DataFrame, val_split: int) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Split a DataFrame into training and validation sets based on a given ratio.
-
-    Args:
-        df (pd.DataFrame): DataFrame to be split.
-        val_split (float): Fraction of the data to be used for validation.
-
-    Returns:
-        Tuple[pd.DataFrame, pd.DataFrame]: 
-            df_train: Training subset of the DataFrame.
-            df_val: Validation subset of the DataFrame.
-    """
-    split_idx = int(len(df) * (1 - val_split))
-
-    df_train = df.iloc[:split_idx]
-    df_val = df.iloc[split_idx:]
-
-    return df_train, df_val
-
-def evaluation_metrics(y_true: np.ndarray | list, y_pred: np.ndarray | list) -> pd.DataFrame:    
-    """
-    Compute global evaluation metrics (MAE, RMSE, MAPE).
-
-    Args:
-        y_true (np.array): True target values, shape (N*H, 1) or (N*H,).
-        y_pred (np.array): Predicted values, shape (N*H, 1) or (N*H,).
-
-    Returns:
-        pd.DataFrame: DataFrame containing the calculated metrics:
-            - 'MAE'  : Mean Absolute Error
-            - 'RMSE' : Root Mean Squared Error
-            - 'MAPE' : Mean Absolute Percentage Error
-    """
-    y_true = np.array(y_true).flatten()
-    y_pred = np.array(y_pred).flatten()
-    
-    mae = mean_absolute_error(y_true, y_pred)
-    rmse = root_mean_squared_error(y_true, y_pred)
-    mape = np.mean(np.abs((y_true - y_pred) / (y_true + 1e-9))) * 100
-
-    metrics = pd.DataFrame([{
-        'RESAMPLE_RULE': RESAMPLE_RULE, 
-        'SEQ_LEN': SEQ_LEN, 
-        'HORIZON': HORIZON,
-        'MAE': mae,
-        'RMSE': rmse,
-        'MAPE': mape
-    }])
-    
-    return metrics
-
-def evaluation_image(df: pd.DataFrame, y_true: np.ndarray | list, y_pred: np.ndarray | list):
-    plt.figure(figsize=(12, 5))
-
-    plt.plot(df.index[-len(y_true):], y_true, label='Real')
-    plt.plot(df.index[-len(y_pred):], y_pred, label='Prediction')
-
-    plt.title("Energy load forescast")
-    plt.xlabel("Time")
-    plt.ylabel("Consumption [Ampere]")
-
-    plt.legend()
-    plt.grid(True, linestyle='--', alpha=0.4)
-    plt.tight_layout()
-    
-    plt.show()
-
-def run_pipeline():
     # load data
-    df = load_and_prepare(CSV_PATH, DATETIME_COL, resample_rule=RESAMPLE_RULE) # 1hour
+    df = load_and_prepare(csv_path, DATETIME_COL, resample_rule=resample_rule) 
+    # df = df.drop(columns=['zone2', 'zone3', 'zone4', 'zone5'])
 
-    df = df.drop(columns=['zone2', 'zone3', 'zone4', 'zone5'])
+    # remove outliers
+    df = interquartile_range(df, target_col)
 
     print(f"=== Original === \n{df.head(10)}")
 
-    df = add_time_features(df)
+    # df = add_time_features(df)
 
     print(f"\n\n=== With time features === \n{df.head(10)}")
 
@@ -243,7 +52,6 @@ def run_pipeline():
 
     # scaling
     feature_cols = list(df.columns)
-    print(feature_cols)
 
     scaler = MinMaxScaler()
     scaler.fit(df_train[feature_cols])  
@@ -254,8 +62,8 @@ def run_pipeline():
                                 index=df_val.index, columns=feature_cols)
 
     # lag windows
-    X_train, Y_train = create_lag_windows(df_train_scaled, target_col=TARGET_COLS, lag=SEQ_LEN, horizon=HORIZON)
-    X_val, Y_val = create_lag_windows(df_val_scaled, target_col=TARGET_COLS, lag=SEQ_LEN, horizon=HORIZON)
+    X_train, Y_train = create_lag_windows(df_train_scaled, target_col=target_col, lag=seq_len, horizon=horizon)
+    X_val, Y_val = create_lag_windows(df_val_scaled, target_col=target_col, lag=seq_len, horizon=horizon)
 
     # data loaders
     train_ds = TimeSeriesDataset(X_train, Y_train)
@@ -274,11 +82,19 @@ def run_pipeline():
     except:
         n_targets = 1
 
-    if HORIZON > 1:
-        model = LSTM(n_features, HIDDEN_SIZE, NUM_LAYERS, 1, n_targets, DROPOUT).to(device)
-    else:
-        model = LSTM(n_features, HIDDEN_SIZE, NUM_LAYERS, HORIZON, n_targets, DROPOUT).to(device)
+    # horizon is always 1, because we make only 1 prediction per input data
+    model = LSTM(input_size=n_features, hidden_size=HIDDEN_SIZE, num_layers=NUM_LAYERS, horizon=1, 
+                 n_targets=n_targets, dropout=DROPOUT).to(device)
         
+    # model = TimeSeriesTransformer(
+    #     input_size=n_features,
+    #     d_model=HIDDEN_SIZE, # dimensão interna
+    #     num_layers=NUM_LAYERS, # num camadas encoder
+    #     num_heads=8,  # cabeças de atenção
+    #     dim_feedforward=256, # feedforward interno
+    #     dropout=DROPOUT
+    # ).to(device)
+
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
     criterion = nn.MSELoss()
 
@@ -287,9 +103,6 @@ def run_pipeline():
     # load and test best model
     model.load_state_dict(torch.load(os.path.join(RESULTS_DIR, "best_lstm.pth"), map_location=device))
     preds_val_scaled, y_val_scaled = testing(model, val_loader, device)
-
-    print(preds_val_scaled.shape)
-    print(y_val_scaled.shape)
 
     def inverse_scale_targets(y_scaled: np.ndarray,  scaler: MinMaxScaler, feature_cols: List[str], 
         target_idx: List[int] = [0]) -> np.ndarray:
@@ -323,15 +136,75 @@ def run_pipeline():
     y_true_real = inverse_scale_targets(y_val_scaled, scaler, feature_cols)
 
     # evaluation
-    df_metrics = evaluation_metrics(y_pred_real, y_true_real)
+    df_metrics = evaluation_metrics(y_true_real, y_pred_real, tag)
 
     print(df_metrics)
 
     df_metrics.to_csv(os.path.join(RESULTS_DIR, "lstm_metrics_by_horizon.csv"), mode='a', index=False)
     
-    evaluation_image(df_val, y_true_real, y_pred_real)
+    plot_predictions(df_val, y_true_real, y_pred_real, save_path=os.path.join(RESULTS_DIR, f"plot_lstm_{tag}.pdf"))
+
+    torch.save(model.state_dict(), os.path.join(RESULTS_DIR, f"best_lstm_{tag}.pth"))
 
     print("LSTM metrics saved to", os.path.join(RESULTS_DIR, "lstm_metrics_by_horizon.csv"))
 
+
+# configs
+# CSV_PATH = "../data/Data Morocco - Laayoune.csv"
+CSV_PATH = "../data/weather-data/consumption_weather_hourly.csv"
+
+RESULTS_DIR = "../results"
+
+# DATETIME_COL = "DateTime"
+# TARGET_COLS = "zone1"        
+
+DATETIME_COL = "date"
+TARGET_COLS = "consumo"
+
+BATCH_SIZE = 64
+EPOCHS = 500
+PATIENCE = 20
+LR = 1e-5
+HIDDEN_SIZE = 128
+NUM_LAYERS = 2
+DROPOUT = 0.3 
+VAL_SPLIT = 0.2
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+experiments = [
+    # Horizon = 1h
+    {"RESAMPLE_RULE": "h", "SEQ_LEN": 3,  "HORIZON": 1, "TAG": "1h_lag3"},
+    {"RESAMPLE_RULE": "h", "SEQ_LEN": 6,  "HORIZON": 1, "TAG": "1h_lag6"},
+    {"RESAMPLE_RULE": "h", "SEQ_LEN": 12, "HORIZON": 1, "TAG": "1h_lag12"},
+    {"RESAMPLE_RULE": "h", "SEQ_LEN": 24, "HORIZON": 1, "TAG": "1h_lag24"},
+
+    # Horizon = 6h
+    {"RESAMPLE_RULE": "h", "SEQ_LEN": 6,  "HORIZON": 6, "TAG": "6h_lag6"},
+    {"RESAMPLE_RULE": "h", "SEQ_LEN": 12, "HORIZON": 6, "TAG": "6h_lag12"},
+    {"RESAMPLE_RULE": "h", "SEQ_LEN": 24, "HORIZON": 6, "TAG": "6h_lag24"},
+
+    # Horizon = 1 day
+    {"RESAMPLE_RULE": "d", "SEQ_LEN": 1, "HORIZON": 1, "TAG": "1d_lag1"},
+    {"RESAMPLE_RULE": "d", "SEQ_LEN": 2, "HORIZON": 1, "TAG": "1d_lag2"},
+]
+
 if __name__ == "__main__":
-    run_pipeline()
+    all_metrics = []
+
+    for exp in experiments:
+        print("\n" + "=" * 60)
+        print(f"Running experiment: {exp['TAG']}")
+        print("=" * 60)
+
+        run_pipeline(
+            csv_path=str(CSV_PATH),
+            resample_rule=exp["RESAMPLE_RULE"],
+            seq_len=exp["SEQ_LEN"],
+            horizon=exp["HORIZON"],
+            device=device,
+            tag=exp["TAG"],
+            target_col=TARGET_COLS
+        )
+
+    print("\nAll experiments finished.")
