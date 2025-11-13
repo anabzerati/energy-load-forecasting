@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from sklearn.metrics import mean_absolute_error, root_mean_squared_error, mean_absolute_percentage_error
+from sklearn.metrics import mean_absolute_error, root_mean_squared_error, mean_absolute_percentage_error, r2_score
 from pathlib import Path
 
 def evaluation_metrics(y_true: np.ndarray | list, y_pred: np.ndarray | list, tag) -> pd.DataFrame:    
@@ -28,12 +28,14 @@ def evaluation_metrics(y_true: np.ndarray | list, y_pred: np.ndarray | list, tag
     mae = mean_absolute_error(y_true, y_pred)
     rmse = root_mean_squared_error(y_true, y_pred)
     mape = mean_absolute_percentage_error(y_true, y_pred)
+    r2 = r2_score(y_true, y_pred)
     
     metrics = pd.DataFrame([{
         'exp': tag,
         'MAE': mae,
         'RMSE': rmse,
-        'MAPE': mape
+        'MAPE': mape,
+        'R2': r2
     }])
     
     return metrics

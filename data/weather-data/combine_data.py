@@ -1,10 +1,16 @@
 import pandas as pd
 import numpy as np
 
-CONSUMPTION_PATH = "../Data Morocco - Laayoune.csv"
-WEATHER_PATH = "hourly_weather_data.csv"   # or "daily_weather_data.csv"
-OUTPUT_PATH = "consumption_weather_hourly.csv"  # or "consumption_weather_daily.csv"
+# CONSUMPTION_PATH = "../Data Morocco - Laayoune.csv"
+# WEATHER_PATH = "hourly_weather_data.csv"   # or "daily_weather_data.csv"
+# OUTPUT_PATH = "consumption_weather_hourly.csv"  # or "consumption_weather_daily.csv"
+# TIMEZONE = "Africa/Casablanca"  # Local timezone for Laayoune
+
+CONSUMPTION_PATH = "../Data Morocco - Foum eloued.csv"
+WEATHER_PATH = "hourly_weather_data_foum_eloued.csv"   # or "daily_weather_data.csv"
+OUTPUT_PATH = "consumption_weather_hourly_foum_eloued.csv"  # or "consumption_weather_daily.csv"
 TIMEZONE = "Africa/Casablanca"  # Local timezone for Laayoune
+
 
 # Laayoune consumption data
 consumption = pd.read_csv(

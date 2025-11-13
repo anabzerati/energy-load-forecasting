@@ -36,10 +36,13 @@ def run_pipeline(
     """
     # load data
     df = load_and_prepare(csv_path, DATETIME_COL, resample_rule=resample_rule) 
-    # df = df.drop(columns=['zone2', 'zone3', 'zone4', 'zone5'])
+    # df = df.drop(columns=['zone2', 'zone3', 'zone4', 'zone5', 'zone6', 'zone7'])
+    df = df.drop(columns=['precipitation', 'rain', 'surface_pressure', 'wind_speed_10m', 'weather_code'])
 
     # remove outliers
-    df = interquartile_range(df, target_col)
+    for col in df.columns:
+        print(col)
+        interquartile_range(df, col)
 
     print(f"=== Original === \n{df.head(10)}")
 
@@ -98,10 +101,10 @@ def run_pipeline(
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
     criterion = nn.MSELoss()
 
-    training(model, train_loader, val_loader, optimizer, criterion, RESULTS_DIR, PATIENCE, EPOCHS, device)
+    training(model, train_loader, val_loader, optimizer, criterion, RESULTS_DIR, PATIENCE, EPOCHS, device, tag=tag)
 
     # load and test best model
-    model.load_state_dict(torch.load(os.path.join(RESULTS_DIR, "best_lstm.pth"), map_location=device))
+    model.load_state_dict(torch.load(os.path.join(RESULTS_DIR, f"best_lstm_{tag}.pth"), map_location=device))
     preds_val_scaled, y_val_scaled = testing(model, val_loader, device)
 
     def inverse_scale_targets(y_scaled: np.ndarray,  scaler: MinMaxScaler, feature_cols: List[str], 
@@ -140,18 +143,18 @@ def run_pipeline(
 
     print(df_metrics)
 
-    df_metrics.to_csv(os.path.join(RESULTS_DIR, "lstm_metrics_by_horizon.csv"), mode='a', index=False)
+    df_metrics.to_csv(os.path.join(RESULTS_DIR, "lstm_metrics_by_horizon_foum_eloued.csv"), mode='a', index=False)
     
     plot_predictions(df_val, y_true_real, y_pred_real, save_path=os.path.join(RESULTS_DIR, f"plot_lstm_{tag}.pdf"))
 
     torch.save(model.state_dict(), os.path.join(RESULTS_DIR, f"best_lstm_{tag}.pth"))
 
-    print("LSTM metrics saved to", os.path.join(RESULTS_DIR, "lstm_metrics_by_horizon.csv"))
+    print("LSTM metrics saved to", os.path.join(RESULTS_DIR, "lstm_metrics_by_horizon_foum_eloued.csv"))
 
 
 # configs
-# CSV_PATH = "../data/Data Morocco - Laayoune.csv"
-CSV_PATH = "../data/weather-data/consumption_weather_hourly.csv"
+# CSV_PATH = "../data/Data Morocco - Foum eloued.csv"
+CSV_PATH = "../data/weather-data/consumption_weather_hourly_foum_eloued.csv"
 
 RESULTS_DIR = "../results"
 
@@ -159,12 +162,12 @@ RESULTS_DIR = "../results"
 # TARGET_COLS = "zone1"        
 
 DATETIME_COL = "date"
-TARGET_COLS = "consumo"
+TARGET_COLS = "consumption"
 
 BATCH_SIZE = 64
 EPOCHS = 500
 PATIENCE = 20
-LR = 1e-5
+LR = 1e-3
 HIDDEN_SIZE = 128
 NUM_LAYERS = 2
 DROPOUT = 0.3 
@@ -203,7 +206,7 @@ if __name__ == "__main__":
             seq_len=exp["SEQ_LEN"],
             horizon=exp["HORIZON"],
             device=device,
-            tag=exp["TAG"],
+            tag=f"{exp['TAG']}_onlyweather",
             target_col=TARGET_COLS
         )
 

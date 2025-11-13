@@ -55,7 +55,8 @@ def training(
     RESULTS_DIR: str,
     PATIENCE: int = 10,
     EPOCHS: int = 100,
-    device: torch.device = 'cpu'
+    device: torch.device = 'cpu',
+    tag: str = "tag"
 ) -> None:        
     """
     Trains and validates a PyTorch model with early stopping, saving the best checkpoint.
@@ -119,8 +120,8 @@ def training(
             best_val = val_loss
             wait = 0
         
-            torch.save(model.state_dict(), os.path.join(RESULTS_DIR, "best_lstm.pth"))
-        
+            torch.save(model.state_dict(), os.path.join(RESULTS_DIR, f"best_lstm_{tag}.pth"))
+
         else:
             wait += 1
         

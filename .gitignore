@@ -2,3 +2,4 @@ results/*
 Data Morocco - Laayoune.csv
 data/weather-data/*.csv
 data/weather-data/.cache.sqlite
+results/*

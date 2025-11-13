@@ -86,7 +86,8 @@ def training(
     RESULTS_DIR: str,
     PATIENCE: int = 10,
     EPOCHS: int = 100,
-    device: torch.device = torch.device("cpu")
+    device: torch.device = torch.device("cpu"),
+    tag="tag"
 ) -> None:
     """
     Trains and validates a GRU (or other PyTorch model) with early stopping, saving the best checkpoint.
@@ -138,7 +139,7 @@ def training(
         if val_loss < best_val:
             best_val = val_loss
             wait = 0
-            torch.save(model.state_dict(), os.path.join(RESULTS_DIR, "best_transformer.pth"))
+            torch.save(model.state_dict(), os.path.join(RESULTS_DIR, f"best_transformer_{tag}.pth"))
         else:
             wait += 1
             if wait >= PATIENCE:

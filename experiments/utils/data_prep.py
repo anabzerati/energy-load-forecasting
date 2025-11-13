@@ -27,6 +27,8 @@ def interquartile_range(df: pd.DataFrame, target_col: str, interpolate: bool = T
     # outliers
     mask_outlier = (df[target_col] < lower_bound) | (df[target_col] > upper_bound)
 
+    print(f"NUM OUTLIERS {mask_outlier.sum()}")
+
     if interpolate:
         df.loc[mask_outlier, target_col] = np.nan
         df[target_col] = df[target_col].interpolate(method='time').bfill().ffill()
@@ -75,11 +77,15 @@ def add_time_features(df: pd.DataFrame) -> pd.DataFrame:
     """
     Enrich the DataFrame with cyclical and categorical time-based features
 
-    Includes:
-        - Daily and weekly cycles (sin, cos)
-        - Day of the year and week of the year (seasonality)
-        - Weekend indicator
-        - Time of day segmentation (Night, Morning, Afternoon, Evening)
+    Features included:
+        - Hour of the Day (sin, cos): captures daily cyclic patterns.
+        - Day of the Week (sin, cos): captures weekly recurring patterns.
+        - Day of the Year (sin, cos): captures yearly seasonality.
+        - Week of the Year (sin, cos): identifies trends within weeks.
+        - Month of the Year (sin, cos): models broader monthly variations.
+        - Weekend indicator: distinguishes between weekends and weekdays.
+        - Time of Day categories: segments hours into Night, Morning, Afternoon, Evening
+          to help models identify different daily consumption regimes.
 
     Args:
         df (pd.DataFrame): DataFrame with a datetime index.
@@ -92,19 +98,24 @@ def add_time_features(df: pd.DataFrame) -> pd.DataFrame:
         raise ValueError("DataFrame must have a datetime index.")
 
     hour = df.index.hour
-
-    # seasonality
     dayofweek = df.index.dayofweek # 0=monday, 6=sunday
     dayofyear = df.index.dayofyear
+    month = df.index.month
     weekofyear = df.index.isocalendar().week.astype(int)
 
-    # cycles
+    # using sin and cos cycles
     df['hour_sin'] = np.sin(2 * np.pi * hour / 24)
     df['hour_cos'] = np.cos(2 * np.pi * hour / 24)
+
     df['dow_sin'] = np.sin(2 * np.pi * dayofweek / 7)
     df['dow_cos'] = np.cos(2 * np.pi * dayofweek / 7)
+
     df['doy_sin'] = np.sin(2 * np.pi * dayofyear / 365)
     df['doy_cos'] = np.cos(2 * np.pi * dayofyear / 365)
+
+    df['month_sin'] = np.sin(2 * np.pi * month / 12)
+    df['month_cos'] = np.cos(2 * np.pi * month / 12)
+
     df['woy_sin'] = np.sin(2 * np.pi * weekofyear / 52)
     df['woy_cos'] = np.cos(2 * np.pi * weekofyear / 52)
 
